@@ -1,0 +1,65 @@
+name: cleanup
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    env:
+      TARGET_REPOSITORY: nixos/nixpkgs
+
+    steps:
+      - name: Find and delete runs for merged PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Searching for review workflow runs..."
+
+          gh api \
+            --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+            --jq '
+              .workflow_runs[]
+              | select(.display_title | test("^review #[0-9]+$"; "i"))
+              | [
+                  .id,
+                  (.display_title | capture("^review #(?<pr>[0-9]+)$"; "i").pr)
+                ]
+              | @tsv
+            ' |
+          while IFS=$'\t' read -r run_id pr_number; do
+
+            echo "Checking PR #${pr_number} in ${TARGET_REPOSITORY}..."
+
+            merged=$(gh api \
+              "repos/${TARGET_REPOSITORY}/pulls/${pr_number}" \
+              --jq '.merged')
+
+            if [[ "$merged" == "true" ]]; then
+
+              echo "PR #${pr_number} is merged."
+              echo "Deleting workflow run ${run_id}..."
+
+              gh api \
+                --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+
+              echo "Successfully deleted run ${run_id}"
+
+            else
+              echo "PR #${pr_number} is not merged. Keeping run."
+            fi
+
+          done
